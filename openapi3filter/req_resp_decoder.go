@@ -36,6 +36,8 @@ const (
 	KindInvalidFormat
 )
 
+var deepObjectBracketRE = regexp.MustCompile(`\[(.*?)\]`)
+
 // ParseError describes errors which happens while parse operation's parameters, requestBody, or response.
 type ParseError struct {
 	Kind   ParseErrorKind
@@ -680,14 +682,18 @@ func (d *urlValuesDecoder) DecodeObject(param string, sm *openapi3.Serialization
 			return propsFromString(values[0], ",", ",")
 		}
 	case "deepObject":
+		// Compile the parameter-name prefix matcher once: it depends only on
+		// param (constant for the whole loop), not on the loop variable. Doing
+		// this inside the loop recompiles it once per query key, turning an
+		// attacker-controlled key count into proportional CPU.
+		paramPrefixRE := regexp.MustCompile(fmt.Sprintf(`^%s\[`, regexp.QuoteMeta(param)))
 		propsFn = func(params url.Values) (map[string]string, error) {
 			props := make(map[string]string)
 			for key, values := range params {
-				if !regexp.MustCompile(fmt.Sprintf(`^%s\[`, regexp.QuoteMeta(param))).MatchString(key) {
+				if !paramPrefixRE.MatchString(key) {
 					continue
 				}
-
-				matches := regexp.MustCompile(`\[(.*?)\]`).FindAllStringSubmatch(key, -1)
+				matches := deepObjectBracketRE.FindAllStringSubmatch(key, -1)
 				switch l := len(matches); {
 				case l == 0:
 					// A query parameter's name does not match the required format, so skip it.
