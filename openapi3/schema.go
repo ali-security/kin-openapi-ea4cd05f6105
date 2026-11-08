@@ -1134,7 +1134,27 @@ func (schema *Schema) VisitJSON(value any, opts ...SchemaValidationOption) error
 	return schema.visitJSON(settings, value)
 }
 
+// visitChildJSON validates a value nested within the one currently visited,
+// such as an array item or an object property.
+// Cycle detection only applies to schemas visiting the same value,
+// so recursive schemas still get applied to nested values.
+func (schema *Schema) visitChildJSON(settings *schemaValidationSettings, value any) error {
+	var start int
+	start, settings.visitedBase = settings.visitedBase, len(settings.visitedSchemas)
+	defer func() { settings.visitedBase = start }()
+	return schema.visitJSON(settings, value)
+}
+
 func (schema *Schema) visitJSON(settings *schemaValidationSettings, value any) (err error) {
+	for _, visited := range settings.visitedSchemas[settings.visitedBase:] {
+		if visited == schema {
+			return nil
+		}
+	}
+	depth := len(settings.visitedSchemas)
+	settings.visitedSchemas = append(settings.visitedSchemas, schema)
+	defer func() { settings.visitedSchemas = settings.visitedSchemas[:depth] }()
+
 	switch value := value.(type) {
 	case nil:
 		// Don't use VisitJSONNull, as we still want to reach 'visitXOFOperations', since
@@ -1873,7 +1893,7 @@ func (schema *Schema) visitJSONArray(settings *schemaValidationSettings, value [
 			return foundUnresolvedRef(itemSchemaRef.Ref)
 		}
 		for i, item := range value {
-			if err := itemSchema.visitJSON(settings, item); err != nil {
+			if err := itemSchema.visitChildJSON(settings, item); err != nil {
 				err = markSchemaErrorIndex(err, i)
 				if !settings.multiError {
 					return err
@@ -1993,7 +2013,7 @@ func (schema *Schema) visitJSONObject(settings *schemaValidationSettings, value 
 				if p == nil {
 					return foundUnresolvedRef(propertyRef.Ref)
 				}
-				if err := p.visitJSON(settings, v); err != nil {
+				if err := p.visitChildJSON(settings, v); err != nil {
 					if settings.failfast {
 						return errSchema
 					}
@@ -2012,7 +2032,7 @@ func (schema *Schema) visitJSONObject(settings *schemaValidationSettings, value 
 		}
 		if allowed := schema.AdditionalProperties.Has; allowed == nil || *allowed {
 			if additionalProperties != nil {
-				if err := additionalProperties.visitJSON(settings, v); err != nil {
+				if err := additionalProperties.visitChildJSON(settings, v); err != nil {
 					if settings.failfast {
 						return errSchema
 					}

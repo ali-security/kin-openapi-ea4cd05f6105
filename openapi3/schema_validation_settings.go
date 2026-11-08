@@ -20,6 +20,12 @@ type schemaValidationSettings struct {
 	defaultsSet         func()
 
 	customizeMessageError func(err *SchemaError) string
+
+	// visitedSchemas provides pointer-identity cycle detection for runtime
+	// validation, matching the stack-based detection in Schema.validate().
+	// Only visitedSchemas[visitedBase:] were visited for the current value.
+	visitedSchemas []*Schema
+	visitedBase    int
 }
 
 // FailFast returns schema validation errors quicker.

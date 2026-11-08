@@ -259,19 +259,39 @@ func decodeStyledParameter(param *openapi3.Parameter, input *RequestValidationIn
 	return decodeValue(dec, param.Name, sm, param.Schema, param.Required)
 }
 
+var errCircularSchema = errors.New("circular schema reference detected while decoding")
+
+// isSchemaSeen reports whether schema is already on the seen stack.
+func isSchemaSeen(seen []*openapi3.Schema, schema *openapi3.Schema) bool {
+	for _, s := range seen {
+		if s == schema {
+			return true
+		}
+	}
+	return false
+}
+
 func decodeValue(dec valueDecoder, param string, sm *openapi3.SerializationMethod, schema *openapi3.SchemaRef, required bool) (any, bool, error) {
+	return decodeValueGuarded(dec, param, sm, schema, required, nil)
+}
+
+func decodeValueGuarded(dec valueDecoder, param string, sm *openapi3.SerializationMethod, schema *openapi3.SchemaRef, required bool, seen []*openapi3.Schema) (any, bool, error) {
 	var found bool
 
 	if schema == nil {
 		return nil, false, nil
 	}
+	if isSchemaSeen(seen, schema.Value) {
+		return nil, false, errCircularSchema
+	}
+	seen = append(seen, schema.Value)
 
 	if len(schema.Value.AllOf) > 0 {
 		var value any
 		var err error
 		for _, sr := range schema.Value.AllOf {
 			var f bool
-			value, f, err = decodeValue(dec, param, sm, sr, required)
+			value, f, err = decodeValueGuarded(dec, param, sm, sr, required, seen)
 			found = found || f
 			if value == nil || err != nil {
 				break
@@ -282,7 +302,7 @@ func decodeValue(dec valueDecoder, param string, sm *openapi3.SerializationMetho
 
 	if len(schema.Value.AnyOf) > 0 {
 		for _, sr := range schema.Value.AnyOf {
-			value, f, _ := decodeValue(dec, param, sm, sr, required)
+			value, f, _ := decodeValueGuarded(dec, param, sm, sr, required, seen)
 			found = found || f
 			if value != nil {
 				return value, found, nil
@@ -298,7 +318,7 @@ func decodeValue(dec valueDecoder, param string, sm *openapi3.SerializationMetho
 		isMatched := 0
 		var value any
 		for _, sr := range schema.Value.OneOf {
-			v, f, _ := decodeValue(dec, param, sm, sr, required)
+			v, f, _ := decodeValueGuarded(dec, param, sm, sr, required, seen)
 			found = found || f
 			if v != nil {
 				value = v
@@ -569,11 +589,20 @@ func (d *urlValuesDecoder) parseArray(raw []string, sm *openapi3.SerializationMe
 }
 
 func (d *urlValuesDecoder) parseValue(v string, schema *openapi3.SchemaRef) (any, error) {
+	return d.parseValueGuarded(v, schema, nil)
+}
+
+func (d *urlValuesDecoder) parseValueGuarded(v string, schema *openapi3.SchemaRef, seen []*openapi3.Schema) (any, error) {
+	if isSchemaSeen(seen, schema.Value) {
+		return nil, errCircularSchema
+	}
+	seen = append(seen, schema.Value)
+
 	if len(schema.Value.AllOf) > 0 {
 		var value any
 		var err error
 		for _, sr := range schema.Value.AllOf {
-			value, err = d.parseValue(v, sr)
+			value, err = d.parseValueGuarded(v, sr, seen)
 			if value == nil || err != nil {
 				break
 			}
@@ -585,7 +614,7 @@ func (d *urlValuesDecoder) parseValue(v string, schema *openapi3.SchemaRef) (any
 		var value any
 		var err error
 		for _, sr := range schema.Value.AnyOf {
-			if value, err = d.parseValue(v, sr); err == nil {
+			if value, err = d.parseValueGuarded(v, sr, seen); err == nil {
 				return value, nil
 			}
 		}
@@ -598,7 +627,7 @@ func (d *urlValuesDecoder) parseValue(v string, schema *openapi3.SchemaRef) (any
 		var value any
 		var err error
 		for _, sr := range schema.Value.OneOf {
-			result, err := d.parseValue(v, sr)
+			result, err := d.parseValueGuarded(v, sr, seen)
 			if err == nil {
 				value = result
 				isMatched++
@@ -991,6 +1020,17 @@ func sliceMapToSlice(m map[string]any) ([]any, error) {
 
 // buildResObj constructs an object based on a given schema and param values
 func buildResObj(params map[string]any, parentKeys []string, key string, schema *openapi3.SchemaRef) (any, error) {
+	return buildResObjGuarded(params, parentKeys, key, schema, nil)
+}
+
+// buildResObjGuarded is buildResObj with cycle detection over the anyOf, oneOf
+// and allOf schemas applied to the same param value.
+func buildResObjGuarded(params map[string]any, parentKeys []string, key string, schema *openapi3.SchemaRef, seen []*openapi3.Schema) (any, error) {
+	if isSchemaSeen(seen, schema.Value) {
+		return nil, errCircularSchema
+	}
+	seen = append(seen, schema.Value)
+
 	mapKeys := parentKeys
 	if key != "" {
 		mapKeys = append(mapKeys, key)
@@ -1055,11 +1095,11 @@ func buildResObj(params map[string]any, parentKeys []string, key string, schema 
 
 		return resultMap, nil
 	case len(schema.Value.AnyOf) > 0:
-		return buildFromSchemas(schema.Value.AnyOf, params, parentKeys, key)
+		return buildFromSchemas(schema.Value.AnyOf, params, parentKeys, key, seen)
 	case len(schema.Value.OneOf) > 0:
-		return buildFromSchemas(schema.Value.OneOf, params, parentKeys, key)
+		return buildFromSchemas(schema.Value.OneOf, params, parentKeys, key, seen)
 	case len(schema.Value.AllOf) > 0:
-		return buildFromSchemas(schema.Value.AllOf, params, parentKeys, key)
+		return buildFromSchemas(schema.Value.AllOf, params, parentKeys, key, seen)
 	default:
 		val, ok := deepGet(params, mapKeys...)
 		if !ok {
@@ -1080,10 +1120,10 @@ func buildResObj(params map[string]any, parentKeys []string, key string, schema 
 }
 
 // buildFromSchemas decodes params with anyOf, oneOf, allOf schemas.
-func buildFromSchemas(schemas openapi3.SchemaRefs, params map[string]any, mapKeys []string, key string) (any, error) {
+func buildFromSchemas(schemas openapi3.SchemaRefs, params map[string]any, mapKeys []string, key string, seen []*openapi3.Schema) (any, error) {
 	resultMap := make(map[string]any)
 	for _, s := range schemas {
-		val, err := buildResObj(params, mapKeys, key, s)
+		val, err := buildResObjGuarded(params, mapKeys, key, s, seen)
 		if err == nil && val != nil {
 
 			if m, ok := val.(map[string]any); ok {
