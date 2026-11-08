@@ -1939,7 +1939,7 @@ func (schema *Schema) visitJSONObject(settings *schemaValidationSettings, value 
 
 			if f := settings.defaultsSet; f != nil && value[propName] == nil {
 				if dflt := propSchema.Value.Default; dflt != nil && !reqRO && !repWO {
-					value[propName] = dflt
+					value[propName] = deepCopyJSONValue(dflt)
 					settings.onceSettingDefaults.Do(f)
 				}
 			}
@@ -2264,4 +2264,23 @@ func RegisterArrayUniqueItemsChecker(fn SliceUniqueItemsChecker) {
 
 func unsupportedFormat(format string) error {
 	return fmt.Errorf("unsupported 'format' value %q", format)
+}
+
+func deepCopyJSONValue(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		cp := make(map[string]any, len(v))
+		for k, val := range v {
+			cp[k] = deepCopyJSONValue(val)
+		}
+		return cp
+	case []any:
+		cp := make([]any, 0, len(v))
+		for _, val := range v {
+			cp = append(cp, deepCopyJSONValue(val))
+		}
+		return cp
+	default:
+		return v // string, float64, bool, nil — all immutable
+	}
 }
