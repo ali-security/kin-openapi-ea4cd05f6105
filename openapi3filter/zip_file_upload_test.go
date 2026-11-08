@@ -17,6 +17,7 @@ import (
 )
 
 func TestValidateZipFileUpload(t *testing.T) {
+	openapi3filter.RegisterBodyDecoder("application/zip", openapi3filter.ZipFileBodyDecoder)
 	const spec = `
 openapi: 3.0.0
 info:
