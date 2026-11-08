@@ -213,6 +213,52 @@ func TestRouter(t *testing.T) {
 	}
 }
 
+func TestRouterUnsupportedMethod(t *testing.T) {
+	doc := &openapi3.T{
+		OpenAPI: "3.0.0",
+		Info: &openapi3.Info{
+			Title:   "MyAPI",
+			Version: "0.1",
+		},
+		Paths: openapi3.NewPaths(
+			openapi3.WithPath("/hello", &openapi3.PathItem{
+				Get: &openapi3.Operation{Responses: openapi3.NewResponses()},
+			}),
+		),
+	}
+	err := doc.Validate(context.Background())
+	require.NoError(t, err)
+	r, err := NewRouter(doc)
+	require.NoError(t, err)
+
+	findRoute := func(method string) (*routers.Route, map[string]string, error) {
+		t.Helper()
+		req, err := http.NewRequest(method, "/hello", nil)
+		require.NoError(t, err)
+		var (
+			route      *routers.Route
+			pathParams map[string]string
+		)
+		require.NotPanics(t, func() { route, pathParams, err = r.FindRoute(req) }, method)
+		return route, pathParams, err
+	}
+
+	for _, method := range []string{"FOO", "PROPFIND", "get"} {
+		route, pathParams, err := findRoute(method)
+		require.EqualError(t, err, routers.ErrMethodNotAllowed.Error(), method)
+		require.Nil(t, route, method)
+		require.Nil(t, pathParams, method)
+	}
+
+	// A matched route whose operation cannot be resolved for the request method
+	// must not be returned with a nil Operation.
+	doc.Paths.Value("/hello").Get = nil
+	route, pathParams, err := findRoute(http.MethodGet)
+	require.EqualError(t, err, routers.ErrMethodNotAllowed.Error())
+	require.Nil(t, route)
+	require.Nil(t, pathParams)
+}
+
 func TestPermuteScheme(t *testing.T) {
 	scheme0 := "{sche}{me}"
 	server := &openapi3.Server{URL: scheme0 + "://{d0}.{d1}.com/api/v1/", Variables: map[string]*openapi3.ServerVariable{

@@ -211,3 +211,34 @@ func TestRouter(t *testing.T) {
 	r, err = NewRouter(doc, openapi3.DisableExamplesValidation())
 	require.NoError(t, err)
 }
+
+func TestRouterUnsupportedMethod(t *testing.T) {
+	doc := &openapi3.T{
+		OpenAPI: "3.0.0",
+		Info: &openapi3.Info{
+			Title:   "MyAPI",
+			Version: "0.1",
+		},
+		Paths: openapi3.NewPaths(
+			openapi3.WithPath("/hello", &openapi3.PathItem{
+				Get: &openapi3.Operation{Responses: openapi3.NewResponses()},
+			}),
+		),
+	}
+	r, err := NewRouter(doc)
+	require.NoError(t, err)
+
+	for _, method := range []string{"FOO", "PROPFIND", "get"} {
+		req, err := http.NewRequest(method, "/hello", nil)
+		require.NoError(t, err)
+
+		var (
+			route      *routers.Route
+			pathParams map[string]string
+		)
+		require.NotPanics(t, func() { route, pathParams, err = r.FindRoute(req) }, method)
+		require.EqualError(t, err, routers.ErrMethodNotAllowed.Error(), method)
+		require.Nil(t, route, method)
+		require.Nil(t, pathParams, method)
+	}
+}
